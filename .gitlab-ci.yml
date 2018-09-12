@@ -1,0 +1,66 @@
+services:
+  - docker:dind
+
+stages:
+  - build
+  - publish
+  - deploy
+
+before_script:
+  - export K_SHA=${CI_COMMIT_SHA:0:7}
+  - export K_IMAGE=registry.gitlab.com/katerraconstruct/construct-budgeting
+  - export K_IMAGE_COMMIT=${K_IMAGE}:${K_SHA}
+  - if [ "${CI_COMMIT_REF_NAME}" = "development" ]; then export K_IMAGE_PUBLISH="${K_IMAGE}:daily"; export K_CLUSTER_DEPLOY="activate_dev_cluster"; fi
+  - if [ "${CI_COMMIT_REF_NAME}" = "staging" ]; then export K_IMAGE_PUBLISH="${K_IMAGE}:stable"; export K_CLUSTER_DEPLOY="activate_stg_cluster"; fi
+  - if [ "${CI_COMMIT_REF_NAME}" = "master" ]; then export K_IMAGE_PUBLISH="${K_IMAGE}:latest"; export K_CLUSTER_DEPLOY="activate_prd_cluster"; fi
+  - echo "${K_IMAGE_PUBLISH}"
+  - echo "${K_CLUSTER_DEPLOY}"
+  - export K_REGION=us-east-1
+  - export K_WEB_FOLDER=Service
+
+build:
+  image: docker:latest
+  stage: build
+  only:
+    - development
+    - staging
+    - master
+  script:
+    - docker login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" ${CI_REGISTRY}
+    - docker build -t ${K_IMAGE_COMMIT} .
+    - docker push ${K_IMAGE_COMMIT}
+
+publish:
+  image: docker:latest
+  stage: publish
+  only:
+    - development
+    - staging
+    - master
+  script:
+    - docker login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" ${CI_REGISTRY}
+    - docker pull ${K_IMAGE_COMMIT}
+    - docker tag ${K_IMAGE_COMMIT} ${K_IMAGE_PUBLISH}
+    - docker push ${K_IMAGE_PUBLISH}
+
+deploy:
+  image: registry.gitlab.com/katerraconstruct/dev-ops/kube-tools:latest
+  stage: deploy
+  only:
+    - development
+    - staging
+  script:
+    - source /.kubernetes/commands.sh
+    - ${K_CLUSTER_DEPLOY}
+    - ci_upgrade_chart cb .helm/cb ${K_SHA}
+
+deploy-production:
+  image: registry.gitlab.com/katerraconstruct/dev-ops/kube-tools:latest
+  stage: deploy
+  only:
+    - master
+  when: manual
+  script:
+    - source /.kubernetes/commands.sh
+    - ${K_CLUSTER_DEPLOY}
+    - ci_upgrade_chart cb .helm/cb ${K_SHA}
